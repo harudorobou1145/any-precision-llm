@@ -1,12 +1,32 @@
 import torch
-from transformers import AutoModelForCausalLM, PreTrainedModel, AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoConfig, AutoModelForCausalLM, PreTrainedModel, AutoTokenizer, PreTrainedTokenizerBase
+
+
+def get_model_class(config):
+    if config.model_type == 'qwen3_5':
+        from transformers import Qwen3_5ForConditionalGeneration
+        return Qwen3_5ForConditionalGeneration
+    return AutoModelForCausalLM
+
+
+def build_model(config, dtype, trust_remote_code=True):
+    model_class = get_model_class(config)
+    if config.model_type == 'qwen3_5':
+        return model_class._from_config(config, dtype=dtype)
+    return model_class.from_config(config, torch_dtype=dtype,
+                                   trust_remote_code=trust_remote_code)
 
 
 def load_model(model_str_or_model, dtype=torch.float16, cpu_only=False):
     """Returns a model from a string or a model object. If a string is passed, it will be loaded from the HuggingFace"""
     if isinstance(model_str_or_model, str):
-        model = AutoModelForCausalLM.from_pretrained(
+        config = AutoConfig.from_pretrained(model_str_or_model, trust_remote_code=True)
+        model_class = get_model_class(config)
+        if config.model_type == 'qwen3_5':
+            dtype = torch.bfloat16
+        model = model_class.from_pretrained(
             model_str_or_model,
+            config=config,
             trust_remote_code=True,
             torch_dtype=dtype,
             device_map='cpu' if cpu_only else 'auto',

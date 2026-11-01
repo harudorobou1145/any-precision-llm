@@ -1,4 +1,5 @@
 from datasets import load_dataset
+from huggingface_hub import hf_hub_download
 import random
 import numpy as np
 import logging
@@ -27,17 +28,11 @@ def _get_ptb(split, slice_unk=True):
 def _get_c4(split):
     assert split in ['train', 'validation'], f"Unknown split {split} for c4"
 
-    if split == 'train':
-        data = load_dataset(
-            'allenai/c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train',
-            trust_remote_code=True
-        )
-    else:
-        assert split == 'validation'
-        data = load_dataset(
-            'allenai/c4', data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation',
-            trust_remote_code=True
-        )
+    filename = ('en/c4-train.00000-of-01024.json.gz' if split == 'train'
+                else 'en/c4-validation.00000-of-00008.json.gz')
+    local_path = hf_hub_download('allenai/c4', filename=filename, repo_type='dataset')
+    logging.info(f"Loading C4 shard: {local_path}")
+    data = load_dataset('json', data_files={split: local_path}, split=split)
 
     return data['text']
 

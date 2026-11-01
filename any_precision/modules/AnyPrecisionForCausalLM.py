@@ -15,6 +15,7 @@ from accelerate.big_modeling import (
 
 from .AnyPrecisionLinear import AnyPrecisionLinear
 from any_precision.analyzer.analyzer import get_analyzer
+from any_precision.analyzer.utils import build_model
 
 
 def replace_module_by_name(layer, module_name, new_module):
@@ -38,6 +39,9 @@ class AnyPrecisionForCausalLM(nn.Module):
         super().__init__()
 
         self.config = config
+        is_qwen = config.model_type == 'qwen3_5'
+        if is_qwen:
+            torch_dtype = torch.bfloat16
 
         self.supported_bits = list(range(self.config.anyprec['seed_precision'],
                                          self.config.anyprec['parent_precision'] + 1))
@@ -52,11 +56,10 @@ class AnyPrecisionForCausalLM(nn.Module):
         self.precision = max(self.precisions)
 
         with init_empty_weights():
-            self.model = AutoModelForCausalLM.from_config(
+            self.model = build_model(
                 config=config,
-                torch_dtype=torch_dtype,
+                dtype=torch_dtype,
                 trust_remote_code=trust_remote_code,
-                # attn_implementation="flash_attention_2",
             )
 
         self.analyzer = get_analyzer(self.model)
@@ -76,7 +79,7 @@ class AnyPrecisionForCausalLM(nn.Module):
             checkpoint=model_path,
             device_map=device_map,
             no_split_module_classes=[self.layer_type],
-            dtype=torch_dtype,
+            dtype=None if is_qwen else torch_dtype,
         )
 
         # Dispath to devices
@@ -91,10 +94,10 @@ class AnyPrecisionForCausalLM(nn.Module):
             precision = kwargs.pop('precision')
             self.set_precision(precision)
 
-        results = self.model.forward(*args, **kwargs)
-
-        self.set_precision(prev_precision)
-        return results
+        try:
+            return self.model.forward(*args, **kwargs)
+        finally:
+            self.set_precision(prev_precision)
 
     def generate(self, *args, **kwargs):
         if 'precision' in kwargs:
@@ -104,11 +107,11 @@ class AnyPrecisionForCausalLM(nn.Module):
         else:
             prev_precision = self.precision
 
-        with torch.inference_mode():
-            results = self.model.generate(*args, **kwargs)
-
-        self.set_precision(prev_precision)
-        return results
+        try:
+            with torch.inference_mode():
+                return self.model.generate(*args, **kwargs)
+        finally:
+            self.set_precision(prev_precision)
 
     @staticmethod
     def _load_config(
@@ -154,6 +157,7 @@ class AnyPrecisionForCausalLM(nn.Module):
                     bias=module.bias is not None,
                     precisions=self.precisions,
                     device=module.weight.device,
+                    dtype=torch.float16,
                 )
                 self.ap_linears.append(wqlinear)
                 replace_module_by_name(layer, name, wqlinear)

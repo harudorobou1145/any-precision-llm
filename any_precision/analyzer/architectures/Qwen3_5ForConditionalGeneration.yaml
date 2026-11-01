@@ -1,0 +1,8 @@
+architecture: Qwen3_5ForConditionalGeneration
+arch_config:
+  model_name: model.language_model
+  layers_name: layers
+  module_names:
+    - mlp.gate_proj
+    - mlp.up_proj
+    - mlp.down_proj

@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
 #include "matmul.cuh"
 
 void cudaError(cudaError_t errCode, const char * filename, int linenum) {
@@ -80,7 +81,7 @@ torch::Tensor dequant_kbit(
     at::Tensor weight = torch::empty({N, K}, options);
 
     dim3 grid(N/num_rows), block(32, num_rows);
-    dequant_functions[w_bits]<<<grid, block>>>(
+    dequant_functions[w_bits]<<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
         (uint32_t *)qweight.data_ptr<int>(),
         N, K,
         (__half *)lut.data_ptr<at::Half>(),
@@ -131,7 +132,7 @@ torch::Tensor matmul_kbit(
     const int num_ksplit = (use_ksplit ? DIV_ROUND_UP(K, 4096) : 1);
 
     dim3 grid(N/(num_rows*multi_row)), block(32, num_rows, num_ksplit);
-    matmul_functions[w_bits][M][use_ksplit]<<<grid, block>>>(
+    matmul_functions[w_bits][M][use_ksplit]<<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
         (__half *)in.data_ptr<at::Half>(),
         (uint32_t *)qweight.data_ptr<int>(),
         M, N, K,

@@ -7,6 +7,7 @@ from ..modules import AnyPrecisionForCausalLM
 import os
 import json
 import lm_eval
+import random
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 
@@ -158,7 +159,8 @@ def auto_model_load(model_path, device='cuda', dtype=torch.float16, verbose=True
 
 
 @torch.no_grad()
-def evaluate_ppl(model, tokenizer, testcases, verbose=True, chunk_size=2048, tokenizer_type=None):
+def evaluate_ppl(model, tokenizer, testcases, verbose=True, chunk_size=2048, tokenizer_type=None,
+                 max_chunks=None, seed=42):
     """
     Args:
         model: model to evaluate
@@ -174,6 +176,11 @@ def evaluate_ppl(model, tokenizer, testcases, verbose=True, chunk_size=2048, tok
 
     Note that the perplexity scores are calculated over non-overlapping chunks of the test set.
     """
+
+    if max_chunks is not None and max_chunks <= 0:
+        raise ValueError("max_chunks must be positive")
+    if chunk_size < 2:
+        raise ValueError("chunk_size must be at least 2")
 
     if isinstance(model, AnyPrecisionForCausalLM):
         is_anyprec = True
@@ -202,10 +209,16 @@ def evaluate_ppl(model, tokenizer, testcases, verbose=True, chunk_size=2048, tok
 
             seq_len = input_tokens.input_ids.size(1)
             nsamples = seq_len // chunk_size  # floor(seq_len / chunk_size)
+            if nsamples == 0:
+                raise ValueError(f"{testcase_name} contains no complete chunks")
+            chunk_indices = list(range(nsamples))
+            if max_chunks is not None and max_chunks < nsamples:
+                chunk_indices = sorted(random.Random(seed).sample(chunk_indices, max_chunks))
+            logprint(verbose, f"Evaluating {len(chunk_indices)} chunks; seed={seed}; indices={chunk_indices}")
 
             neg_log_likelihoods = []
-            for i in tqdm(range(nsamples), disable=not verbose):
-                begin_loc = i * chunk_size
+            for chunk_index in tqdm(chunk_indices, disable=not verbose):
+                begin_loc = chunk_index * chunk_size
 
                 input_ids = input_tokens.input_ids[:, begin_loc:begin_loc + chunk_size]
 
@@ -233,7 +246,7 @@ def evaluate_ppl(model, tokenizer, testcases, verbose=True, chunk_size=2048, tok
 
 
 @torch.no_grad()
-def run_lm_eval(tokenizer, model, tasks, verbose=True):
+def run_lm_eval(tokenizer, model, tasks, verbose=True, limit=None, seed=42):
     """ Run lm-eval on the given model and tasks and return the results.
 
     Receives an already initialized hf model, and a list of task names.
@@ -255,7 +268,11 @@ def run_lm_eval(tokenizer, model, tasks, verbose=True):
             model.set_precision(bit)
 
         model_lm = lm_eval.models.huggingface.HFLM(pretrained=model, tokenizer=tokenizer)
-        eval_results = lm_eval.simple_evaluate(model=model_lm, tasks=tasks)
+        eval_results = lm_eval.simple_evaluate(
+            model=model_lm, tasks=tasks, limit=limit, num_fewshot=0,
+            random_seed=seed, numpy_random_seed=seed, torch_random_seed=seed,
+            fewshot_random_seed=seed,
+        )
 
         if verbose:
             logprint(verbose, json.dumps(eval_results['results'], indent=4))

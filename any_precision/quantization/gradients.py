@@ -34,10 +34,18 @@ def get_gradients(
     # copy when calibration converts the model to bfloat16.
     analyzer.state_dict = {name: tensor.cpu() for name, tensor in analyzer.state_dict.items()}
 
-    model = model.bfloat16()
+    is_qwen = model.config.model_type == 'qwen3_5'
+    if not is_qwen:
+        model = model.bfloat16()
     model.eval()
 
     layers = analyzer.get_layers()
+    if is_qwen:
+        model.requires_grad_(False)
+        for layer in layers:
+            for module in analyzer.get_modules(layer).values():
+                module.weight.requires_grad_(True)
+        model.zero_grad(set_to_none=True)
 
     # Register hook to store the square of the gradients
     def square_grad_hook(grad):
@@ -53,7 +61,7 @@ def get_gradients(
     for tokens in tqdm(input_tokens, desc="Calculating gradients"):
         tokens = tokens.to(model.device)
         tokens = tokens.unsqueeze(0)
-        outputs = model(input_ids=tokens, labels=tokens)
+        outputs = model(input_ids=tokens, labels=tokens, use_cache=False)
         loss = outputs.loss
         loss.backward()
 

@@ -18,7 +18,17 @@ parser.add_argument('--output_file', type=str, default='results.json')
 parser.add_argument('--redo', action='store_true')
 parser.add_argument('--cache_dir', type=str, default='./cache')
 parser.add_argument('--downstream', action='store_true')
+parser.add_argument('--ppl-chunks', type=int, default=None)
+parser.add_argument('--task-limit', type=int, default=None)
+parser.add_argument('--seed', type=int, default=42)
 args = parser.parse_args()
+if args.ppl_chunks is not None and args.ppl_chunks <= 0:
+    parser.error('--ppl-chunks must be positive')
+if args.task_limit is not None and args.task_limit <= 0:
+    parser.error('--task-limit must be positive')
+if args.ppl_chunks is not None or args.task_limit is not None:
+    if args.output_file == 'results.json':
+        args.output_file = f'results-subset-ppl{args.ppl_chunks}-tasks{args.task_limit}-seed{args.seed}.json'
 
 model_paths = []
 
@@ -136,7 +146,8 @@ for i, model_path in enumerate(total_tests_to_run):
     tokenizer_type, tokenizer, model = eval.auto_model_load(model_path)
     if datasets_to_evaluate:
         ppl_results = eval.evaluate_ppl(model, tokenizer, datasets_to_evaluate, verbose=True,
-                                        chunk_size=2048, tokenizer_type=tokenizer_type)
+                                        chunk_size=2048, tokenizer_type=tokenizer_type,
+                                        max_chunks=args.ppl_chunks, seed=args.seed)
 
     # Update ppl results
     new_results[model_name] = {}
@@ -148,7 +159,8 @@ for i, model_path in enumerate(total_tests_to_run):
 
     # Run lm_eval
     if tasks_to_evaluate:
-        lm_eval_results = eval.run_lm_eval(tokenizer, model, tasks_to_evaluate)
+        lm_eval_results = eval.run_lm_eval(tokenizer, model, tasks_to_evaluate,
+                         limit=args.task_limit, seed=args.seed)
 
     # Update lm_eval results
     if lm_eval_results:

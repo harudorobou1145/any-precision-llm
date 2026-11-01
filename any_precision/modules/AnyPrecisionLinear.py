@@ -57,6 +57,10 @@ class AnyPrecisionLinear(nn.Module):
         else:
             w_bits = self.precision
 
+        input_dtype = x.dtype
+        if input_dtype == torch.bfloat16:
+            x = x.to(torch.float16)
+
         if x.numel() // x.shape[-1] > 8:
             weight = dequant_kbit(self.qweight, self._buffers[f'lut{w_bits}'], w_bits)
             x = torch.matmul(x, weight.T)
@@ -66,7 +70,7 @@ class AnyPrecisionLinear(nn.Module):
         if self.bias is not None:
             x += self.bias
 
-        return x
+        return x.to(input_dtype)
 
     def set_precision(self, precision):
         if precision not in self.precisions:

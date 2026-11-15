@@ -86,3 +86,24 @@ Publication validation: `python -m unittest discover -s tests -p 'test_*.py'`
 ran 8 tests, 7 passed and 1 optional full-model test skipped.
 `git diff --check` passed. Training and full-model checks were not rerun for
 this publication.
+
+## W2 and BF16 adapter (2026-11-09)
+
+The plugin accepts W2 through W8 and BF16 activations. W2 or BF16 uses
+bitplane decoding into a cached dense weight followed by floating-point linear
+operations; this is not a native INT2 kernel. Codebook synchronization clears
+the cache. Each visited precision keeps its own dense weight, increasing memory
+use. The previous FP16 W3-W8 packed kernel remains available.
+
+Real Qwen3.5-0.8B seed2-parent8 checks passed for W2/W4/W8: greedy next tokens
+match the HF reference and selected-token log probabilities differ by less
+than 0.1. Set ANYPRECISION_TEST_BITS=2,4,8 and
+ANYPRECISION_TEST_DTYPE=bfloat16 for the optional full-model test.
+
+ANYPRECISION_BENCHMARK=1 additionally compares eight identical short prompts
+with 128 generated tokens, including first-use cache decoding. One RTX4090
+measurement: W2 vLLM 5.279s versus HF 5.004s; W4 vLLM 3.236s versus HF 5.184s.
+These single measurements do not establish a W2 speedup or end-to-end MOPD
+throughput improvement. Full W2/BF16 MOPD training is not yet validated.
+The benchmark uses eager execution and local callbacks; the latter require
+VLLM_ALLOW_INSECURE_SERIALIZATION=1 in the trusted local test environment only.

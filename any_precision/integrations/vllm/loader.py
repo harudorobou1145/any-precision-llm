@@ -44,7 +44,8 @@ class AnyPrecisionModelLoader(DefaultModelLoader):
                 layer_cache[index] = indices, books
             indices, books = layer_cache[index]
             projections = ('gate_proj', 'up_proj') if match.group(2) == 'gate_up_proj' else (match.group(2),)
-            packed = torch.cat([pack_indices(torch.as_tensor(indices[f'mlp.{projection}'][:, 0, :]))
+            packed = torch.cat([pack_indices(torch.as_tensor(indices[f'mlp.{projection}'][:, 0, :]),
+                                             max(method.precisions))
                                 for projection in projections], dim=1)
             codebooks = {bits: torch.cat([torch.as_tensor(books[bits][f'mlp.{projection}'][:, 0, :])
                                          for projection in projections], dim=0)

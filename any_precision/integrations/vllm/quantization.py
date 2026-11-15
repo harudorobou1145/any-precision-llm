@@ -4,7 +4,7 @@ from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMetho
 from vllm.model_executor.layers.quantization import register_quantization_config
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig, QuantizeMethodBase
 
-from .packed import compressed_linear
+from .packed import compressed_linear, decode_weight
 
 
 @register_quantization_config('anyprecision')
@@ -12,14 +12,14 @@ class AnyPrecisionConfig(QuantizationConfig):
     def __init__(self, precisions=(4, 8)):
         super().__init__()
         self.precisions = sorted(set(precisions))
-        if not self.precisions or any(bits < 3 or bits > 8 for bits in self.precisions):
-            raise ValueError('Precisions must be between 3 and 8.')
+        if not self.precisions or any(bits < 2 or bits > 8 for bits in self.precisions):
+            raise ValueError('Precisions must be between 2 and 8.')
 
     def get_name(self):
         return 'anyprecision'
 
     def get_supported_act_dtypes(self):
-        return [torch.float16]
+        return [torch.float16, torch.bfloat16]
 
     @classmethod
     def get_min_capability(cls):
@@ -56,9 +56,10 @@ class AnyPrecisionLinearMethod(QuantizeMethodBase):
             max(self.precisions), output_width, input_size // 32, dtype=torch.int32), requires_grad=False))
         for bits in self.precisions:
             layer.register_parameter(f'lut{bits}', torch.nn.Parameter(torch.empty(
-                output_width, 2 ** bits, dtype=torch.float16), requires_grad=False))
+                output_width, 2 ** bits, dtype=params_dtype), requires_grad=False))
         layer.anyprecision_bits = max(self.precisions)
         layer.anyprecision_ready = False
+        layer.anyprecision_dense_cache = {}
 
     @torch.no_grad()
     def load_compressed(self, layer, qweight, codebooks):
@@ -78,6 +79,7 @@ class AnyPrecisionLinearMethod(QuantizeMethodBase):
                 raise ValueError('Missing or incompatible codebook.')
         for bits in self.precisions:
             getattr(layer, f'lut{bits}').copy_(codebooks[bits])
+        layer.anyprecision_dense_cache.clear()
 
     def set_precision(self, layer, bits):
         if bits not in self.precisions:
@@ -88,4 +90,10 @@ class AnyPrecisionLinearMethod(QuantizeMethodBase):
         if not layer.anyprecision_ready:
             raise RuntimeError('Load AnyPrecision bitplanes and codebooks before inference.')
         bits = layer.anyprecision_bits
+        if bits == 2 or inputs.dtype == torch.bfloat16:
+            key = (bits, inputs.dtype)
+            if key not in layer.anyprecision_dense_cache:
+                layer.anyprecision_dense_cache[key] = decode_weight(
+                    layer.qweight, getattr(layer, f'lut{bits}'), bits, inputs.dtype)
+            return torch.nn.functional.linear(inputs, layer.anyprecision_dense_cache[key], bias)
         return compressed_linear(inputs, layer.qweight, getattr(layer, f'lut{bits}'), bits, bias)

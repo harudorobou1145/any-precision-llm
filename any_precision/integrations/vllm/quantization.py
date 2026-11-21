@@ -9,8 +9,9 @@ from .packed import compressed_linear, decode_weight
 
 @register_quantization_config('anyprecision')
 class AnyPrecisionConfig(QuantizationConfig):
-    def __init__(self, precisions=(4, 8)):
+    def __init__(self, precisions=(4, 8), full_projection=False):
         super().__init__()
+        self.full_projection = full_projection
         self.precisions = sorted(set(precisions))
         if not self.precisions or any(bits < 2 or bits > 8 for bits in self.precisions):
             raise ValueError('Precisions must be between 2 and 8.')
@@ -31,11 +32,15 @@ class AnyPrecisionConfig(QuantizationConfig):
 
     @classmethod
     def from_config(cls, config):
-        return cls(config.get('precisions', (4, 8)))
+        return cls(config.get('precisions', (4, 8)), config.get('full_projection', False))
 
     def get_quant_method(self, layer, prefix):
         if isinstance(layer, LinearBase):
-            if prefix.endswith(('.mlp.gate_up_proj', '.mlp.gate_proj', '.mlp.up_proj', '.mlp.down_proj')):
+            targets = ('.mlp.gate_up_proj', '.mlp.gate_proj', '.mlp.up_proj', '.mlp.down_proj')
+            if self.full_projection:
+                targets += ('.linear_attn.in_proj_qkvz', '.linear_attn.out_proj',
+                            '.self_attn.qkv_proj', '.self_attn.o_proj')
+            if prefix.endswith(targets):
                 return AnyPrecisionLinearMethod(self.precisions)
             return UnquantizedLinearMethod()
         return None

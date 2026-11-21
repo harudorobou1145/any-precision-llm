@@ -2,6 +2,7 @@ import unittest
 import os
 import asyncio
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -47,12 +48,15 @@ class VllmIntegrationTests(unittest.TestCase):
 
         model_path = os.environ['ANYPRECISION_MODEL']
         cache = os.environ['ANYPRECISION_CACHE']
+        cached = torch.load(Path(cache) / 'weights' / 'l0.pt', map_location='cpu', weights_only=False)
+        full_projection = any(not key.startswith('mlp.') for key in cached)
         precisions = [int(value) for value in os.environ.get('ANYPRECISION_TEST_BITS', '4,8').split(',')]
         dtype_name = os.environ.get('ANYPRECISION_TEST_DTYPE', 'float16')
         dtype = getattr(torch, dtype_name)
         engine = LLM(model=model_path, quantization='anyprecision', load_format='anyprecision',
                  model_loader_extra_config={'cache_path': cache, 'precision': max(precisions)}, dtype=dtype_name,
-                 hf_overrides={'quantization_config': {'quant_method': 'anyprecision', 'precisions': precisions}},
+                 hf_overrides={'quantization_config': {'quant_method': 'anyprecision', 'precisions': precisions,
+                                                       'full_projection': full_projection}},
                      tensor_parallel_size=1, enforce_eager=True, max_model_len=256,
                      max_num_seqs=8, max_num_batched_tokens=256, gpu_memory_utilization=0.15,
                      enable_prefix_caching=False, limit_mm_per_prompt={'image': 0, 'video': 0})
@@ -73,6 +77,26 @@ class VllmIntegrationTests(unittest.TestCase):
             self.assertEqual(output.token_ids[0], expected_token, f'{bits}-bit greedy token mismatch')
             expected_logprob = logits.log_softmax(-1)[expected_token].item()
             self.assertAlmostEqual(output.logprobs[0][expected_token].logprob, expected_logprob, delta=0.1)
+        from any_precision.trainable import TrainableAnyPrecisionLinear
+
+        for layer in reference.modules():
+            if isinstance(layer, TrainableAnyPrecisionLinear):
+                layer.indices[0, 0] ^= 64
+                with torch.no_grad():
+                    layer.delta.add_(0.0001)
+        state = {key: value.detach().cpu() for key, value in reference.state_dict().items()
+                 if key.endswith(('.indices', '.delta', *(f'.base_lut{bits}' for bits in precisions)))}
+        engine.apply_model(lambda net: update_from_actor(net, state.items()))
+        for bits in precisions:
+            engine.apply_model(lambda net: set_precision(net, bits))
+            result = engine.generate([{'prompt_token_ids': token_ids}],
+                                     SamplingParams(temperature=0, max_tokens=1, logprobs=5), use_tqdm=False)
+            with torch.no_grad(), student_precision(reference, bits):
+                logits = reference(input_ids=torch.tensor([token_ids], device='cuda')).logits[0, -1].float()
+            token = logits.argmax().item()
+            self.assertEqual(result[0].outputs[0].token_ids[0], token)
+            self.assertAlmostEqual(result[0].outputs[0].logprobs[0][token].logprob,
+                                   logits.log_softmax(-1)[token].item(), delta=0.1)
         if os.environ.get('ANYPRECISION_BENCHMARK') == '1':
             for bits in (2, 4):
                 def clear_cache(net):
@@ -119,8 +143,9 @@ class VllmIntegrationTests(unittest.TestCase):
             self.assertEqual(generated.batch['responses'].shape, (2, 2))
             self.assertEqual(generated.non_tensor_batch['student_bits'].tolist(), [8, 4])
             asyncio.run(rollout.update_weights(reference.state_dict().items()))
-            for _, layer in compressed_layers(engine.llm_engine.model_executor.driver_worker.worker.model_runner.model):
-                self.assertTrue(layer.anyprecision_ready)
+            readiness = engine.apply_model(lambda net: all(layer.anyprecision_ready
+                                             for _, layer in compressed_layers(net)))
+            self.assertTrue(all(readiness))
 
     def make_model(self, device='cpu'):
         model = torch.nn.Module()
@@ -139,6 +164,7 @@ class VllmIntegrationTests(unittest.TestCase):
         state = {}
         for projection in ('gate_proj', 'up_proj'):
             prefix = f'model.language_model.layers.0.mlp.{projection}.'
+            state[prefix + 'indices'] = torch.full((16, 32), 17, dtype=torch.uint8)
             state[prefix + 'delta'] = torch.ones(16, 256)
             for bits in (4, 8):
                 state[prefix + f'base_lut{bits}'] = torch.full((16, 2 ** bits), 2.0)
@@ -149,6 +175,16 @@ class VllmIntegrationTests(unittest.TestCase):
             self.assertEqual(layer.anyprecision_bits, bits)
             torch.testing.assert_close(getattr(layer, f'lut{bits}'), torch.full((32, 2 ** bits), 3.0).half())
         self.assertEqual(pointer, layer.qweight.data_ptr())
+        torch.testing.assert_close(layer.qweight, pack_indices(torch.full((32, 32), 17, dtype=torch.uint8)))
+        layer.bfloat16()
+        layer.quant_method.apply(layer, torch.ones(1, 32).bfloat16())
+        self.assertTrue(layer.anyprecision_dense_cache)
+        for key in state:
+            if key.endswith('.indices'):
+                state[key].fill_(33)
+        update_from_actor(model, state.items())
+        self.assertFalse(layer.anyprecision_dense_cache)
+        torch.testing.assert_close(layer.qweight, pack_indices(torch.full((32, 32), 33, dtype=torch.uint8)))
         state.pop('model.language_model.layers.0.mlp.up_proj.base_lut8')
         snapshot = layer.lut4.clone()
         with self.assertRaises(ValueError):

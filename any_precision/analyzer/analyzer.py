@@ -49,9 +49,11 @@ class ModelAnalyzer:
     constructor. Alternatively, you can instantiate from a yaml file using the from_yaml method.
     """
 
-    def __init__(self, model: AutoModelForCausalLM, module_names, model_name, layers_name, include_tokenizer=False):
+    def __init__(self, model: AutoModelForCausalLM, module_names, model_name, layers_name, include_tokenizer=False,
+                 optional_module_names=None):
         self.model = model
         self.module_names = module_names
+        self.optional_module_names = optional_module_names or []
         self.model_name = model_name
         self.layers_name = layers_name
         self.config = model.config
@@ -72,6 +74,7 @@ class ModelAnalyzer:
             "module_names": self.module_names,
             "model_name": self.model_name,
             "layers_name": self.layers_name,
+            "optional_module_names": self.optional_module_names,
         }
         return quant_config
 
@@ -98,6 +101,10 @@ class ModelAnalyzer:
             for attrib_name in module_name.split('.'):
                 module = getattr(module, attrib_name)
             modules[module_name] = module
+        for module_name in self.optional_module_names:
+            branch, relative = module_name.split('.', 1)
+            if hasattr(layer, branch):
+                modules[module_name] = getattr(layer, branch).get_submodule(relative)
         return modules
 
     def get_layer_weights(self, layer_idx):
@@ -124,11 +131,9 @@ class ModelAnalyzer:
         return module
 
     def drop_original_weights(self):
-        weight_key_prefixes = [f'{self.model_name}.{self.layers_name}.{i}' for i in range(self.num_layers)]
-        weight_key_postfix = 'weight'
-        for prefix in weight_key_prefixes:
-            for module_name in self.module_names:
-                key = f"{prefix}.{module_name}.{weight_key_postfix}"
+        for index, layer in enumerate(self.get_layers()):
+            for module_name in self.get_modules(layer):
+                key = f"{self.model_name}.{self.layers_name}.{index}.{module_name}.weight"
                 self.state_dict.pop(key)
 
         self.model = None

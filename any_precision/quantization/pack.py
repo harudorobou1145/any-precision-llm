@@ -83,7 +83,7 @@ def _process_layer_data(args):
     weightpath = os.path.join(lut_path, 'weights', f'l{layer_idx}.pt')
     layer_weights = torch.load(weightpath, weights_only=False)
 
-    for i, name in enumerate(module_names):
+    for name in layer_weights:
         N, group_count, group_size = layer_weights[name].shape
         K = group_count * group_size
 

@@ -37,6 +37,18 @@ class QwenAdaptationTests(unittest.TestCase):
         self.assertEqual(config['arch_config']['model_name'], 'model.language_model')
         self.assertEqual(config['arch_config']['module_names'],
                          ['mlp.gate_proj', 'mlp.up_proj', 'mlp.down_proj'])
+        from any_precision.analyzer.analyzer import ModelAnalyzer
+        from transformers import AutoConfig
+        model_config = AutoConfig.from_pretrained('/workspace/my_project/models/Qwen3.5-0.8B')
+        utils = load_source('loader_utils', 'any_precision/analyzer/utils.py')
+        with torch.device('meta'):
+            model = utils.build_model(model_config, torch.bfloat16)
+        analyzer = ModelAnalyzer.from_arch_config(model, config['arch_config'])
+        selected = [analyzer.get_modules(layer) for layer in analyzer.get_layers()]
+        self.assertEqual(sum(map(len, selected)), 150)
+        self.assertIn('linear_attn.in_proj_qkv', selected[0])
+        self.assertIn('self_attn.q_proj', selected[3])
+        self.assertNotIn('linear_attn.in_proj_a', selected[0])
 
     def test_linear_dtype_boundary(self):
         module = load_source('ap_linear', 'any_precision/modules/AnyPrecisionLinear.py')

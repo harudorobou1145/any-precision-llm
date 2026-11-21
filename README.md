@@ -2,6 +2,13 @@
 
 ## Overview
 
+### Qwen3.5-0.8B experiments (dev1)
+
+For the full-projection W2-W8 student, use the [dev1 quantization guide](https://github.com/harudorobou1145/any-precision-llm/blob/dev1/TRAINABLE_QWEN.md).
+The bit widths share one index tensor: lower precisions select a codeword using the high bits of the same index. To compare a base model with an SFT model, generate a separate cache for each using the same calibration settings (C4, 100 examples, 512 tokens); do not reuse the base model's gradients or codebooks.
+
+The companion [Open-MOPD dev1 branch](https://github.com/harudorobou1145/Open-MOPD/tree/dev1) contains the training and evaluation scripts.
+
 Any-precision LLM is a memory-efficient and cost-effective solution for deployment of multiple, different sized LLMs.
 Specifically, any-precision LLM redues the memory cost of deplying multiple, different-sized LLMs by overlaying LLMs
 quantized to varying bit-widths, such as 3, 4, ..., n bits, into a memory footprint comparable to a single n-bit LLM.
